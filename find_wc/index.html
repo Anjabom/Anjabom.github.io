@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPS 궤적 지도</title>
+  <meta name="description" content="GPS 기록 CSV를 위성지도 위에 그리고, 열 값으로 색을 입혀 비교하는 브라우저 도구. 파일은 서버로 가지 않습니다.">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="panel">
+  <header>
+    <h1>GPS 궤적 지도</h1>
+    <p>CSV를 끌어다 놓으면 위성지도에 그려요. 파일은 이 브라우저 밖으로 나가지 않아요.</p>
+  </header>
+
+  <label class="drop">
+    <input type="file" id="file" accept=".csv,.txt,text/csv" multiple hidden>
+    <b>CSV 파일 선택</b>
+    <span>또는 화면 아무 곳에 끌어다 놓기</span>
+  </label>
+  <div id="samples" class="samples"></div>
+  <p id="msg" class="msg" role="status"></p>
+
+  <section>
+    <h2>파일</h2>
+    <ul id="tracks" class="tracks"></ul>
+  </section>
+
+  <section class="controls">
+    <label>색 기준 <select id="colorBy"></select></label>
+    <label>기준 경로 <select id="ref"></select></label>
+    <div id="legend" class="legend"></div>
+  </section>
+
+  <p class="hint">지도 위 궤적을 클릭하면 그 지점의 값이 나와요. 아래 그래프에 마우스를 올리면 지도에 위치가 표시돼요.</p>
+</aside>
+
+<main>
+  <div id="map"></div>
+  <div id="chartBox" class="chartbox" hidden>
+    <div class="chart-head">
+      <select id="chartTrack" aria-label="그래프 파일"></select>
+      <select id="chartCol" aria-label="그래프 열"></select>
+      <span id="readout"></span>
+    </div>
+    <canvas id="chart"></canvas>
+  </div>
+</main>
+
+<div id="dropOverlay" class="drop-overlay">여기에 놓으면 불러와요</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
