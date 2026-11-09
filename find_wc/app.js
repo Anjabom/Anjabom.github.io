@@ -2,7 +2,7 @@
 
 // 카카오맵 JavaScript 키. 비어 있거나 불러오기에 실패하면 Esri 위성지도(Leaflet)로 대신 그린다.
 // 키 발급·도메인 등록 방법은 README의 "카카오 지도 켜기".
-const KAKAO_JS_KEY = '58c9072bf8ee71eee5a0b48778f3a1bf';
+const KAKAO_JS_KEY = 'a7aafd39f3dd07a89d965b8dc17cf9c5';
 
 // 예제 버튼으로 불러올 CSV (이 폴더 기준). 파일이 있을 때만 버튼이 나온다.
 const SAMPLES = ['maincourse.csv', 'subcourse.csv'];
