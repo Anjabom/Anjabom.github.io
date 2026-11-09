@@ -1,12 +1,16 @@
 'use strict';
 
+// 카카오맵 JavaScript 키. 비어 있거나 불러오기에 실패하면 Esri 위성지도(Leaflet)로 대신 그린다.
+// 키 발급·도메인 등록 방법은 README의 "카카오 지도 켜기".
+const KAKAO_JS_KEY = '';
+
 // 예제 버튼으로 불러올 CSV (이 폴더 기준). 파일이 있을 때만 버튼이 나온다.
 const SAMPLES = ['maincourse.csv', 'subcourse.csv'];
 
 const R = 6371008.8;
 const D2R = Math.PI / 180;
-const FILE_COLORS = ['#ff453a', '#0a84ff', '#ffd60a', '#30d158', '#bf5af2', '#ff9f0a', '#64d2ff', '#ff375f'];
-const CAT_COLORS = ['#ff453a', '#0a84ff', '#ffd60a', '#30d158', '#bf5af2', '#ff9f0a', '#64d2ff', '#ff375f', '#ac8e68', '#5e5ce6'];
+const FILE_COLORS = ['#ff2d8f', '#2f7cf6', '#ffd60a', '#30d158', '#bf5af2', '#ff9f0a', '#64d2ff', '#ff453a'];
+const CAT_COLORS = ['#ff453a', '#2f7cf6', '#ffd60a', '#30d158', '#bf5af2', '#ff9f0a', '#64d2ff', '#ff2d8f', '#ac8e68', '#5e5ce6'];
 const NEUTRAL = '#8e8e93';
 const LAT_KEYS = ['latitude', 'lat', 'fix_lat', 'gps_lat'];
 const LON_KEYS = ['longitude', 'lon', 'lng', 'long', 'fix_lon', 'gps_lon'];
@@ -14,27 +18,134 @@ const FILE = '__file';
 const DEV = '__dev';
 
 const $ = (id) => document.getElementById(id);
-const state = { tracks: [], colorBy: FILE, refId: '', chartId: '', chartCol: '', cursor: null };
+const state = { tracks: [], colorBy: FILE, refId: '', chartId: '', chartCol: '', sel: null, base: 'sat' };
 const devCache = new Map(); // `${trackId}:${refId}` -> number[]
 let nextId = 1;
+let mapApi = null;
 
-// ── 지도 ──────────────────────────────────────────────
-const map = L.map('map').setView([36.5, 127.8], 7);
-const satellite = L.tileLayer(
-  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-  { maxNativeZoom: 19, maxZoom: 22, attribution: 'Tiles &copy; Esri' },
-).addTo(map);
-const street = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxNativeZoom: 19, maxZoom: 22, attribution: '&copy; OpenStreetMap contributors',
-});
-L.control.layers({ '위성': satellite, '일반 지도': street }).addTo(map);
-L.control.scale({ imperial: false }).addTo(map);
+// ── 지도 엔진 (카카오 / Leaflet 공통 인터페이스) ─────
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`스크립트 로드 실패: ${src}`));
+    document.head.appendChild(s);
+  });
+}
 
-const renderer = L.canvas({ padding: 0.5 });
-map.createPane('cursor').style.zIndex = 650;
-const cursorMarker = L.circleMarker([0, 0], {
-  pane: 'cursor', radius: 7, color: '#fff', weight: 3, fillColor: '#111', fillOpacity: 1, interactive: false,
-});
+function loadCss(href) {
+  return new Promise((resolve) => {
+    const l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = href;
+    l.onload = resolve;
+    l.onerror = resolve;
+    document.head.appendChild(l);
+  });
+}
+
+function dotEl(cls, color) {
+  const d = document.createElement('div');
+  d.className = cls;
+  if (color) d.style.background = color;
+  return d;
+}
+
+async function kakaoMap(el) {
+  await loadScript(`https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(KAKAO_JS_KEY)}&autoload=false`);
+  await Promise.race([
+    new Promise((resolve) => kakao.maps.load(resolve)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('카카오맵 초기화 시간 초과')), 8000)),
+  ]);
+  const K = kakao.maps;
+  const LL = ([lat, lon]) => new K.LatLng(lat, lon);
+  const map = new K.Map(el, { center: LL([36.5, 127.8]), level: 13, mapTypeId: K.MapTypeId.SKYVIEW });
+  map.addControl(new K.ZoomControl(), K.ControlPosition.RIGHT);
+  const cursor = new K.CustomOverlay({ content: dotEl('cursor-dot'), xAnchor: 0.5, yAnchor: 0.5, zIndex: 10 });
+  const px = (ll) => {
+    const p = map.getProjection().containerPointFromCoords(ll);
+    return { x: p.x, y: p.y };
+  };
+  return {
+    name: '지도: 카카오맵',
+    line: (pts, { color, weight, opacity = 1 }) => new K.Polyline({
+      map, path: pts.map(LL), strokeWeight: weight, strokeColor: color, strokeOpacity: opacity,
+    }),
+    dot: (p, color) => new K.CustomOverlay({
+      map, position: LL(p), content: dotEl('start-dot', color), xAnchor: 0.5, yAnchor: 0.5, zIndex: 5,
+    }),
+    remove: (h) => h.setMap(null),
+    fit: (pts, left) => {
+      const b = new K.LatLngBounds();
+      pts.forEach((p) => b.extend(LL(p)));
+      map.setBounds(b, 40, 40, 40, left);
+    },
+    setBase: (base) => map.setMapTypeId(base === 'sat' ? K.MapTypeId.SKYVIEW : K.MapTypeId.ROADMAP),
+    toPixel: (p) => px(LL(p)),
+    onClick: (fn) => K.event.addListener(map, 'click', (e) => fn(px(e.latLng))),
+    setCursor: (p) => {
+      if (!p) { cursor.setMap(null); return; }
+      cursor.setPosition(LL(p));
+      cursor.setMap(map);
+    },
+  };
+}
+
+async function leafletMap(el) {
+  await loadCss('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css');
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js');
+  const map = L.map(el, { zoomControl: false }).setView([36.5, 127.8], 7);
+  L.control.zoom({ position: 'topright' }).addTo(map);
+  L.control.scale({ imperial: false, position: 'bottomright' }).addTo(map);
+  const bases = {
+    sat: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxNativeZoom: 19, maxZoom: 22, attribution: 'Tiles &copy; Esri',
+    }),
+    road: L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxNativeZoom: 19, maxZoom: 22, attribution: '&copy; OpenStreetMap contributors',
+    }),
+  };
+  let current = 'sat';
+  bases.sat.addTo(map);
+  const renderer = L.canvas({ padding: 0.5 });
+  const cursor = L.marker([0, 0], {
+    icon: L.divIcon({ className: '', html: '<div class="cursor-dot"></div>', iconSize: [18, 18] }),
+    interactive: false, zIndexOffset: 1000,
+  });
+  return {
+    name: '지도: Esri 위성 (카카오 키 없음)',
+    line: (pts, { color, weight, opacity = 1 }) => L.polyline(pts, { renderer, color, weight, opacity, interactive: false }).addTo(map),
+    dot: (p, color) => L.circleMarker(p, {
+      renderer, radius: 6, color: '#000', weight: 2, fillColor: color, fillOpacity: 1, interactive: false,
+    }).addTo(map),
+    remove: (h) => h.remove(),
+    fit: (pts, left) => map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [left, 40], paddingBottomRight: [40, 40] }),
+    setBase: (base) => {
+      bases[current].remove();
+      current = base;
+      bases[base].addTo(map);
+    },
+    toPixel: (p) => map.latLngToContainerPoint(p),
+    onClick: (fn) => map.on('click', (e) => fn(e.containerPoint)),
+    setCursor: (p) => (p ? cursor.setLatLng(p).addTo(map) : cursor.remove()),
+  };
+}
+
+async function initMap() {
+  const el = $('map');
+  if (KAKAO_JS_KEY) {
+    try {
+      mapApi = await kakaoMap(el);
+    } catch (e) {
+      el.innerHTML = '';
+      showMsg('카카오맵을 불러오지 못해 Esri 위성지도로 대신 보여 줘요. 키와 도메인 등록을 확인하세요.', true);
+    }
+  }
+  if (!mapApi) mapApi = await leafletMap(el);
+  mapApi.onClick(onMapClick);
+  $('mapName').textContent = KAKAO_JS_KEY && mapApi.name.includes('Esri') ? '지도: Esri 위성 (카카오맵 로드 실패)' : mapApi.name;
+}
 
 // ── CSV 읽기 ──────────────────────────────────────────
 async function readText(file) {
@@ -116,18 +227,31 @@ function buildTrack(name, text) {
     colNames.push(h);
   });
 
+  // 누적 거리 — 그래프의 가로축
   const P = projector(pts[0]);
-  let length = 0;
+  const dist = [0];
   let prev = P(pts[0]);
   for (let i = 1; i < pts.length; i++) {
     const cur = P(pts[i]);
-    length += Math.hypot(cur[0] - prev[0], cur[1] - prev[1]);
+    dist.push(dist[i - 1] + Math.hypot(cur[0] - prev[0], cur[1] - prev[1]));
     prev = cur;
   }
 
   const id = String(nextId++);
-  const color = FILE_COLORS[(Number(id) - 1) % FILE_COLORS.length];
-  return { id, name, color, pts, cols, colNames, length, visible: true, layer: null, skipped: rows.length - 1 - pts.length };
+  return {
+    id,
+    name,
+    color: FILE_COLORS[(Number(id) - 1) % FILE_COLORS.length],
+    pts,
+    dist,
+    length: dist[dist.length - 1],
+    cols,
+    colNames,
+    coordCols: `${header[li]}/${header[oi]}`,
+    skipped: rows.length - 1 - pts.length,
+    visible: true,
+    handles: [],
+  };
 }
 
 // ── 기준 경로와의 거리 ────────────────────────────────
@@ -204,93 +328,94 @@ function colorSpec() {
   return { type: 'cat', label: c, colors, get: (t) => (t.cols[c] ? t.cols[c].data.map(String) : null) };
 }
 
-function colorOf(spec, v) {
-  if (spec.type === 'cat') return spec.colors.get(v) || NEUTRAL;
-  return Number.isFinite(v) ? gradient((v - spec.lo) / (spec.hi - spec.lo)) : NEUTRAL;
+// 점마다의 색. 한 가지 색이면 null
+function pointColors(t, spec) {
+  const vals = spec.type === 'file' ? null : spec.get(t);
+  if (!vals) return null;
+  return vals.map((v) => {
+    if (spec.type === 'cat') return spec.colors.get(v) || NEUTRAL;
+    return Number.isFinite(v) ? gradient((v - spec.lo) / (spec.hi - spec.lo)) : NEUTRAL;
+  });
 }
+
+// 거리 색칠 중의 기준 경로는 흰색 — 빨강(멀다)과 헷갈리지 않게
+const solidColor = (t, spec) => (spec.type === 'num' && t === getRef() ? '#ffffff' : t.color);
 
 // ── 그리기 ────────────────────────────────────────────
 function render() {
   const spec = colorSpec();
   for (const t of state.tracks) {
-    if (t.layer) { t.layer.remove(); t.layer = null; }
+    t.handles.forEach((h) => mapApi.remove(h));
+    t.handles = [];
     if (!t.visible) continue;
-    const g = L.layerGroup();
-    const line = (pts, color, weight = 4) => L.polyline(pts, { renderer, color, weight, interactive: false }).addTo(g);
-    line(t.pts, '#000', 7).setStyle({ opacity: 0.45 }); // 위성사진 위에서 잘 보이게 검은 테두리
-    const vals = spec.type === 'file' ? null : spec.get(t);
-    if (!vals) {
-      // 거리 색칠 중의 기준 경로는 흰색 — 빨강(멀다)과 헷갈리지 않게
-      line(t.pts, spec.type === 'num' && t === getRef() ? '#ffffff' : t.color);
+    const add = (h) => t.handles.push(h);
+    add(mapApi.line(t.pts, { color: '#000', weight: 8, opacity: 0.35 })); // 위성사진 위에서 잘 보이게
+    const colors = pointColors(t, spec);
+    if (!colors) {
+      add(mapApi.line(t.pts, { color: solidColor(t, spec), weight: 5 }));
     } else {
-      // 구간 k(점 k → k+1)는 점 k의 값으로 칠하고, 같은 색이 이어지면 한 선으로 묶는다
+      // 구간 k(점 k → k+1)는 점 k의 색으로 칠하고, 같은 색이 이어지면 한 선으로 묶는다
       const n = t.pts.length;
       let s = 0;
       for (let k = 1; k <= n - 1; k++) {
-        if (k === n - 1 || colorOf(spec, vals[k]) !== colorOf(spec, vals[s])) {
-          line(t.pts.slice(s, k + 1), colorOf(spec, vals[s]));
+        if (k === n - 1 || colors[k] !== colors[s]) {
+          add(mapApi.line(t.pts.slice(s, k + 1), { color: colors[s], weight: 5 }));
           s = k;
         }
       }
     }
-    L.circleMarker(t.pts[0], {
-      renderer, radius: 5, color: '#000', weight: 2, fillColor: t.color, fillOpacity: 1, interactive: false,
-    }).addTo(g);
-    g.addTo(map);
-    t.layer = g;
+    add(mapApi.dot(t.pts[0], t.color));
   }
-  drawLegend(spec);
   drawTrackList();
+  drawLegend(spec);
   drawChart();
+  drawSelection();
 }
 
 const fmt = (v) => {
-  if (typeof v === 'string') return v;
+  if (typeof v === 'string') return v === '' ? '(빈칸)' : v;
   if (!Number.isFinite(v)) return '-';
+  if (Number.isInteger(v)) return String(v);
   const a = Math.abs(v);
-  return v.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : 2);
+  return v.toFixed(a >= 100 ? 0 : a >= 10 ? 1 : a >= 1 ? 2 : 3);
 };
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 function drawLegend(spec) {
   const el = $('legend');
-  if (spec.type === 'file') {
-    el.innerHTML = state.tracks.length ? '파일마다 다른 색으로 그려요. 왼쪽 색 칸을 눌러 바꿀 수 있어요.' : '';
-  } else if (spec.type === 'num') {
+  if (spec.type === 'num') {
     el.innerHTML = `<b>${esc(spec.label)}</b><div class="grad"></div>`
       + `<div class="scale"><span>${fmt(spec.lo)}${spec.unit} 이하</span><span>${fmt(spec.hi)}${spec.unit} 이상</span></div>`;
-  } else {
+  } else if (spec.type === 'cat') {
     el.innerHTML = `<b>${esc(spec.label)}</b><div class="cats">${
-      [...spec.colors].map(([v, c]) => `<span><i style="background:${c}"></i>${esc(v === '' ? '(빈칸)' : v)}</span>`).join('')
+      [...spec.colors].map(([v, c]) => `<span><i style="background:${c}"></i>${esc(fmt(v))}</span>`).join('')
     }</div>`;
+  } else {
+    el.innerHTML = '';
   }
 }
 
 function drawTrackList() {
   const ul = $('tracks');
-  if (!state.tracks.length) {
-    ul.innerHTML = '<li class="empty">아직 불러온 파일이 없어요</li>';
-    return;
-  }
   const ref = getRef();
   ul.innerHTML = '';
   for (const t of state.tracks) {
-    let meta = `${t.pts.length.toLocaleString()}점 · ${Math.round(t.length).toLocaleString()} m`;
+    let meta = `${t.pts.length.toLocaleString()}점 · ${t.length.toFixed(1)} m · ${esc(t.coordCols)}`;
     if (t.skipped) meta += ` · ${t.skipped}줄 건너뜀`;
-    if (ref && t !== ref) {
+    if (t === ref) meta += '<br>기준 경로';
+    else if (ref) {
       const d = devOf(t, ref);
       meta += `<br>기준과 거리 평균 ${fmt(d.reduce((a, b) => a + b, 0) / d.length)} m · 최대 ${fmt(Math.max(...d))} m`;
     }
-    if (t === ref) meta += '<br>기준 경로';
     const li = document.createElement('li');
-    li.className = t.visible ? '' : 'hidden-track';
-    li.innerHTML = `<input type="color" value="${t.color}" title="색 바꾸기">`
+    li.className = t.visible ? '' : 'off';
+    li.innerHTML = `<input type="checkbox" ${t.visible ? 'checked' : ''} title="표시">`
+      + `<label class="swatch" style="background:${t.color}" title="색 바꾸기"><input type="color" value="${t.color}"></label>`
       + `<div class="tname"><b title="${esc(t.name)}">${esc(t.name)}</b><small>${meta}</small></div>`
-      + `<label><input type="checkbox" ${t.visible ? 'checked' : ''}>표시</label>`
-      + '<button title="목록에서 빼기">✕</button>';
-    li.querySelector('input[type=color]').addEventListener('change', (e) => { t.color = e.target.value; render(); });
+      + '<button class="btn small">지우기</button>';
     li.querySelector('input[type=checkbox]').addEventListener('change', (e) => { t.visible = e.target.checked; render(); });
-    li.querySelector('button').addEventListener('click', () => removeTrack(t));
+    li.querySelector('input[type=color]').addEventListener('change', (e) => { t.color = e.target.value; render(); });
+    li.querySelector('button').addEventListener('click', () => removeTracks([t]));
     ul.appendChild(li);
   }
 }
@@ -312,8 +437,7 @@ function refreshControls() {
     for (const name of t.colNames) {
       const col = t.cols[name];
       if (!col.varies) continue; // 값이 하나뿐인 열은 색으로 볼 게 없다
-      const list = col.numeric ? numericCols : textCols;
-      if (!numericCols.includes(name) && !textCols.includes(name)) list.push(name);
+      if (!numericCols.includes(name) && !textCols.includes(name)) (col.numeric ? numericCols : textCols).push(name);
     }
   }
   const valid = [FILE, ...numericCols, ...textCols, ...(ref ? [DEV] : [])];
@@ -363,8 +487,9 @@ function refreshChartCols(followColor = false) {
   cols.forEach((n) => cc.appendChild(option(n, n === DEV ? '기준과 거리 (m)' : n, state.chartCol)));
 }
 
-// ── 그래프 ────────────────────────────────────────────
-const PAD = { l: 44, r: 10, t: 8, b: 18 };
+// ── 그래프 (가로축 = 누적 거리) ───────────────────────
+const PAD = { l: 34, r: 6, t: 6, b: 12 };
+const BAND = 7; // 그래프 아래 색 띠 높이 — 지도와 같은 색
 
 function chartSeries(t) {
   if (!t || !state.chartCol) return null;
@@ -372,11 +497,17 @@ function chartSeries(t) {
   return t.cols[state.chartCol]?.data ?? null;
 }
 
+function chartGeom(t, w, h) {
+  const total = t.length || 1;
+  return {
+    X: (i) => PAD.l + (t.dist[i] / total) * (w - PAD.l - PAD.r),
+    plotBottom: h - PAD.b - BAND - 3,
+  };
+}
+
 function drawChart() {
   const box = $('chartBox');
-  const wasHidden = box.hidden;
   box.hidden = !state.tracks.length;
-  if (wasHidden !== box.hidden) map.invalidateSize();
   if (box.hidden) return;
 
   const canvas = $('chart');
@@ -388,38 +519,33 @@ function drawChart() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  ctx.font = '11px system-ui, sans-serif';
+  ctx.font = '10px system-ui, sans-serif';
   ctx.fillStyle = '#9aa0aa';
 
   const t = getTrack(state.chartId);
   const ys = chartSeries(t);
+  $('chartEnd').textContent = t ? `${Math.round(t.length)} m` : '';
   if (!ys) {
     ctx.fillText('그래프로 볼 숫자 열이 없어요', PAD.l, h / 2);
     return;
   }
+  const { X, plotBottom } = chartGeom(t, w, h);
   const finite = ys.filter(Number.isFinite);
   let lo = Math.min(...finite);
   let hi = Math.max(...finite);
   if (!(hi > lo)) { lo -= 1; hi += 1; }
-  const X = (i) => PAD.l + (i / Math.max(1, ys.length - 1)) * (w - PAD.l - PAD.r);
-  const Y = (v) => PAD.t + (1 - (v - lo) / (hi - lo)) * (h - PAD.t - PAD.b);
+  const Y = (v) => PAD.t + (1 - (v - lo) / (hi - lo)) * (plotBottom - PAD.t);
 
-  ctx.strokeStyle = '#2f333d';
+  ctx.strokeStyle = '#2c2f36';
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (const v of [lo, (lo + hi) / 2, hi]) { ctx.moveTo(PAD.l, Y(v)); ctx.lineTo(w - PAD.r, Y(v)); }
   ctx.stroke();
   ctx.textAlign = 'right';
   ctx.textBaseline = 'middle';
-  for (const v of [lo, (lo + hi) / 2, hi]) ctx.fillText(fmt(v), PAD.l - 6, Y(v));
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('0', PAD.l, h - 4);
-  ctx.textAlign = 'right';
-  ctx.fillText(`${ys.length - 1}번째 점`, w - PAD.r, h - 4);
+  for (const v of [lo, (lo + hi) / 2, hi]) ctx.fillText(fmt(v), PAD.l - 4, Y(v));
 
-  ctx.strokeStyle = t.color;
-  ctx.lineWidth = 1.5;
+  // 선 + 아래 채우기
   ctx.beginPath();
   let pen = false;
   ys.forEach((v, i) => {
@@ -427,77 +553,127 @@ function drawChart() {
     if (pen) ctx.lineTo(X(i), Y(v)); else ctx.moveTo(X(i), Y(v));
     pen = true;
   });
+  ctx.strokeStyle = '#ff6b6b';
+  ctx.lineWidth = 1.3;
   ctx.stroke();
 
-  const cur = state.cursor;
-  if (cur && cur.id === t.id) {
+  // 색 띠 — 지도에 칠한 색 그대로
+  const spec = colorSpec();
+  const colors = pointColors(t, spec);
+  const bandY = plotBottom + 3;
+  for (let i = 0; i < t.pts.length - 1; i++) {
+    ctx.fillStyle = colors ? colors[i] : solidColor(t, spec);
+    ctx.fillRect(X(i), bandY, Math.max(1, X(i + 1) - X(i) + 0.5), BAND);
+  }
+
+  const sel = state.sel;
+  if (sel && sel.id === t.id) {
     ctx.strokeStyle = '#fff';
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(X(cur.i), PAD.t);
-    ctx.lineTo(X(cur.i), h - PAD.b);
+    ctx.moveTo(X(sel.i), PAD.t);
+    ctx.lineTo(X(sel.i), bandY + BAND);
     ctx.stroke();
   }
 }
 
-function setCursor(t, i) {
-  state.cursor = { id: t.id, i };
-  cursorMarker.setLatLng(t.pts[i]).addTo(map);
-  const ys = chartSeries(t);
-  const label = state.chartCol === DEV ? '기준과 거리' : state.chartCol;
-  $('readout').textContent = `${i}번째 점${ys ? ` · ${label} ${fmt(ys[i])}${state.chartCol === DEV ? ' m' : ''}` : ''}`;
-  drawChart();
+function chartIndexAt(e) {
+  const t = getTrack(state.chartId);
+  if (!t) return null;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const frac = (e.clientX - rect.left - PAD.l) / (rect.width - PAD.l - PAD.r);
+  const target = Math.max(0, Math.min(1, frac)) * t.length;
+  let lo = 0;
+  let hi = t.dist.length - 1;
+  while (lo < hi) { // target 이상인 첫 점
+    const mid = (lo + hi) >> 1;
+    if (t.dist[mid] < target) lo = mid + 1; else hi = mid;
+  }
+  if (lo > 0 && target - t.dist[lo - 1] < t.dist[lo] - target) lo--;
+  return { t, i: lo };
 }
 
 $('chart').addEventListener('mousemove', (e) => {
-  const t = getTrack(state.chartId);
-  if (!t) return;
-  const rect = e.currentTarget.getBoundingClientRect();
-  const frac = (e.clientX - rect.left - PAD.l) / (rect.width - PAD.l - PAD.r);
-  setCursor(t, Math.max(0, Math.min(t.pts.length - 1, Math.round(frac * (t.pts.length - 1)))));
+  const hit = chartIndexAt(e);
+  if (hit) select(hit.t, hit.i);
+});
+$('chart').addEventListener('click', (e) => {
+  const hit = chartIndexAt(e);
+  if (hit) select(hit.t, hit.i);
 });
 new ResizeObserver(() => drawChart()).observe($('chart'));
 
-// ── 지도 클릭: 가장 가까운 점의 값 보기 ──────────────
-function nearestPoint(containerPoint, maxPx) {
+// ── 선택 지점 ─────────────────────────────────────────
+function select(t, i) {
+  state.sel = { id: t.id, i };
+  mapApi.setCursor(t.pts[i]);
+  drawChart();
+  drawSelection();
+}
+
+function clearSelection() {
+  state.sel = null;
+  mapApi.setCursor(null);
+  drawChart();
+  drawSelection();
+}
+
+function drawSelection() {
+  const box = $('sel');
+  const t = state.sel && getTrack(state.sel.id);
+  box.hidden = !t;
+  if (!t) return;
+  const i = state.sel.i;
+  const rows = [
+    ['파일', t.name],
+    ['점 번호', `${i} / ${t.pts.length - 1}`],
+    ['누적 거리', `${t.dist[i].toFixed(1)} m`],
+    ['위도', t.pts[i][0].toFixed(9)],
+    ['경도', t.pts[i][1].toFixed(9)],
+  ];
+  const ref = getRef();
+  if (ref && ref !== t) rows.push(['기준과 거리', `${fmt(devOf(t, ref)[i])} m`]);
+  for (const n of t.colNames) rows.push([n, fmt(t.cols[n].data[i])]);
+  $('selRows').innerHTML = rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
+}
+
+function onMapClick(clickPx) {
   let best = null;
   for (const t of state.tracks) {
     if (!t.visible) continue;
     t.pts.forEach((p, i) => {
-      const d = map.latLngToContainerPoint(p).distanceTo(containerPoint);
-      if (d <= maxPx && (!best || d < best.d)) best = { t, i, d };
+      const q = mapApi.toPixel(p);
+      const d = Math.hypot(q.x - clickPx.x, q.y - clickPx.y);
+      if (d <= 14 && (!best || d < best.d)) best = { t, i, d };
     });
   }
-  return best;
-}
-
-function rowHtml(t, i) {
-  const rows = [['점 번호', i], ['위도', t.pts[i][0].toFixed(8)], ['경도', t.pts[i][1].toFixed(8)]];
-  const ref = getRef();
-  if (ref && ref !== t) rows.push(['기준과 거리', `${fmt(devOf(t, ref)[i])} m`]);
-  for (const n of t.colNames) rows.push([n, fmt(t.cols[n].data[i])]);
-  return `<b>${esc(t.name)}</b><div class="popup-scroll"><table class="popup-table">${
-    rows.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join('')
-  }</table></div>`;
-}
-
-map.on('click', (e) => {
-  const hit = nearestPoint(e.containerPoint, 14);
-  if (!hit) return;
-  if (state.chartId !== hit.t.id) {
-    state.chartId = hit.t.id;
-    $('chartTrack').value = hit.t.id;
+  if (!best) return;
+  if (state.chartId !== best.t.id) {
+    state.chartId = best.t.id;
+    $('chartTrack').value = best.t.id;
     refreshChartCols();
   }
-  setCursor(hit.t, hit.i);
-  L.popup({ maxWidth: 320 }).setLatLng(hit.t.pts[hit.i]).setContent(rowHtml(hit.t, hit.i)).openOn(map);
-});
+  select(best.t, best.i);
+}
 
-// ── 불러오기 · 빼기 ──────────────────────────────────
+$('selClear').addEventListener('click', clearSelection);
+
+// ── 불러오기 · 지우기 ────────────────────────────────
 function showMsg(text, isError = false) {
   const el = $('msg');
   el.textContent = text;
   el.className = isError ? 'msg error' : 'msg';
+}
+
+// 패널에 가린 왼쪽만큼 비켜서 맞춘다
+const panelOffset = () => {
+  const p = $('panel');
+  return window.innerWidth > 600 && !p.classList.contains('collapsed') ? p.offsetWidth + 40 : 40;
+};
+
+function fitTracks(tracks) {
+  const pts = tracks.filter((t) => t.visible).flatMap((t) => t.pts);
+  if (pts.length) mapApi.fit(pts, panelOffset());
 }
 
 function addTracks(added) {
@@ -506,8 +682,7 @@ function addTracks(added) {
   if (!state.chartId) state.chartId = added[0].id;
   refreshControls();
   render();
-  const bounds = L.latLngBounds(added.flatMap((t) => t.pts));
-  map.fitBounds(bounds, { padding: [30, 30] });
+  fitTracks(added);
 }
 
 async function addFiles(files) {
@@ -521,8 +696,7 @@ async function addFiles(files) {
     }
   }
   addTracks(added);
-  if (errors.length) showMsg(errors.join(' / '), true);
-  else showMsg(`${added.map((t) => t.name).join(', ')} 불러옴`);
+  showMsg(errors.join(' / '), errors.length > 0);
 }
 
 async function loadUrls(urls) {
@@ -543,17 +717,17 @@ async function loadUrls(urls) {
     }
   }
   addTracks(added);
-  if (errors.length) showMsg(errors.join(' / '), true);
-  else if (added.length) showMsg(`${added.map((t) => t.name).join(', ')} 불러옴`);
+  showMsg(errors.join(' / '), errors.length > 0);
 }
 
-function removeTrack(t) {
-  if (t.layer) t.layer.remove();
-  state.tracks = state.tracks.filter((x) => x !== t);
-  for (const key of [...devCache.keys()]) if (key.split(':').includes(t.id)) devCache.delete(key);
-  if (state.refId === t.id) state.refId = '';
-  if (state.cursor?.id === t.id) { state.cursor = null; cursorMarker.remove(); $('readout').textContent = ''; }
-  map.closePopup();
+function removeTracks(list) {
+  for (const t of list) {
+    t.handles.forEach((h) => mapApi.remove(h));
+    for (const key of [...devCache.keys()]) if (key.split(':').includes(t.id)) devCache.delete(key);
+    if (state.refId === t.id) state.refId = '';
+    if (state.sel?.id === t.id) { state.sel = null; mapApi.setCursor(null); }
+  }
+  state.tracks = state.tracks.filter((t) => !list.includes(t));
   refreshControls();
   render();
 }
@@ -562,6 +736,21 @@ function removeTrack(t) {
 $('file').addEventListener('change', (e) => {
   addFiles([...e.target.files]);
   e.target.value = '';
+});
+$('fitAll').addEventListener('click', () => fitTracks(state.tracks));
+$('clearAll').addEventListener('click', () => removeTracks([...state.tracks]));
+for (const [id, base] of [['baseSat', 'sat'], ['baseRoad', 'road']]) {
+  $(id).addEventListener('click', () => {
+    state.base = base;
+    mapApi.setBase(base);
+    $('baseSat').classList.toggle('active', base === 'sat');
+    $('baseRoad').classList.toggle('active', base === 'road');
+  });
+}
+$('collapse').addEventListener('click', () => {
+  const collapsed = $('panel').classList.toggle('collapsed');
+  $('collapse').textContent = collapsed ? '+' : '−';
+  $('collapse').title = collapsed ? '펼치기' : '접기';
 });
 $('colorBy').addEventListener('change', (e) => {
   state.colorBy = e.target.value;
@@ -612,7 +801,6 @@ document.addEventListener('drop', (e) => {
   else showMsg('CSV 파일만 불러올 수 있어요', true);
 });
 
-// ── 시작 ──────────────────────────────────────────────
 // 예제 CSV는 저장소에 올리지 않으므로(.gitignore) 실제로 있는 파일만 버튼으로 보여 준다
 async function showSamples() {
   if (location.protocol === 'file:') return;
@@ -625,7 +813,7 @@ async function showSamples() {
   const samples = $('samples');
   if (found.length > 1) {
     const all = document.createElement('button');
-    all.textContent = '예제 모두 불러오기';
+    all.textContent = '예제 모두';
     all.addEventListener('click', () => loadUrls(found));
     samples.appendChild(all);
   }
@@ -636,11 +824,14 @@ async function showSamples() {
     samples.appendChild(b);
   }
 }
-showSamples();
 
-refreshControls();
-render();
-
-// ?load=a.csv,b.csv 로 열면 그 파일들을 바로 불러온다 (링크 공유용)
-const preload = new URLSearchParams(location.search).get('load');
-if (preload) loadUrls(preload.split(',').map((s) => s.trim()).filter(Boolean));
+// ── 시작 ──────────────────────────────────────────────
+(async () => {
+  await initMap();
+  refreshControls();
+  render();
+  showSamples();
+  // ?load=a.csv,b.csv 로 열면 그 파일들을 바로 불러온다
+  const preload = new URLSearchParams(location.search).get('load');
+  if (preload) loadUrls(preload.split(',').map((s) => s.trim()).filter(Boolean));
+})();

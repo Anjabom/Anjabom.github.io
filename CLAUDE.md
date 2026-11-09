@@ -10,10 +10,17 @@ index.html        find_wc/ 로 넘겨 주는 리다이렉트만 있음
 find_wc/
   index.html      화면 뼈대
   style.css       스타일 (색은 :root 변수)
-  app.js          전부의 로직 — CSV 파싱, 지도, 색칠, 기준 경로 거리, 그래프
+  app.js          전부의 로직 — 지도 엔진, CSV 파싱, 색칠, 기준 경로 거리, 그래프, 선택 지점
   *.csv           예제 데이터 — 로컬 전용, .gitignore로 저장소에서 제외 (app.js 의 SAMPLES 와 짝, 있을 때만 버튼 표시)
 ```
-빌드 단계·패키지 매니저·프레임워크 없음. 외부 의존성은 cdnjs의 Leaflet 1.9.4 하나.
+빌드 단계·패키지 매니저·프레임워크 없음.
+
+## 화면 · 지도
+- 화면은 원작자의 옛 find_wc(코드 소실, 스크린샷만 있음)를 본뜬 것: 전체 화면 지도 + 왼쪽 위 떠 있는 어두운 패널
+  (탭 "궤적 비교" · 접기 버튼 / 파일 카드 / 전체 보기·모두 지우기 / 위성·일반 / 그래프 / 선택 지점 / 하단 링크).
+- 지도 엔진은 `kakaoMap()` / `leafletMap()` 두 가지가 같은 인터페이스(line, dot, remove, fit, setBase, toPixel, onClick, setCursor)를 낸다.
+  `KAKAO_JS_KEY`(app.js 맨 위)가 있으면 카카오(SKYVIEW/ROADMAP), 없거나 로드 실패면 Leaflet + Esri/OSM. 지도 기능을 고칠 때는 두 쪽을 함께 고친다.
+- 카카오 JavaScript 키는 도메인 제한이라 커밋해도 된다. 등록 도메인: https://anjabom.github.io, http://localhost:8000
 
 ## 배포
 - 저장소 `Anjabom/Anjabom.github.io`, 브랜치 `main`의 루트가 그대로 `https://anjabom.github.io/` 가 된다.
@@ -41,4 +48,5 @@ python -m http.server 8000
 
 ## 테스트
 자동 테스트 없음. 고친 뒤 로컬 서버로 열어 `?load=maincourse.csv,subcourse.csv` 로 확인:
-파일별 색 / terrain / 기준 경로 = maincourse 일 때 거리 색칠 / 지도 클릭 팝업 / 그래프 호버.
+파일별 색 / terrain / 기준 경로 = maincourse 일 때 거리 색칠 / 지도 클릭 → 선택 지점 / 그래프 호버 / 위성·일반 전환.
+카카오 대체 경로는 키에 아무 값('invalid')이나 넣어 "카카오맵 로드 실패" 표시와 Esri 지도가 나오는지 본다.

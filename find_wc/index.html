@@ -3,55 +3,70 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GPS 궤적 지도</title>
-  <meta name="description" content="GPS 기록 CSV를 위성지도 위에 그리고, 열 값으로 색을 입혀 비교하는 브라우저 도구. 파일은 서버로 가지 않습니다.">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <title>궤적 비교 — 매핑 vs 주행</title>
+  <meta name="description" content="GPS 기록 CSV를 위성지도 위에 그리고 열 값으로 색을 입혀 비교하는 브라우저 도구. 파일은 서버로 가지 않습니다.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<div id="map"></div>
+
 <aside id="panel">
-  <header>
-    <h1>GPS 궤적 지도</h1>
-    <p>CSV를 끌어다 놓으면 위성지도에 그려요. 파일은 이 브라우저 밖으로 나가지 않아요.</p>
-  </header>
+  <div class="panel-head">
+    <div class="tabs"><span class="tab active">궤적 비교</span></div>
+    <button id="collapse" class="icon-btn" title="접기" aria-label="패널 접기">−</button>
+  </div>
 
-  <label class="drop">
-    <input type="file" id="file" accept=".csv,.txt,text/csv" multiple hidden>
-    <b>CSV 파일 선택</b>
-    <span>또는 화면 아무 곳에 끌어다 놓기</span>
-  </label>
-  <div id="samples" class="samples"></div>
-  <p id="msg" class="msg" role="status"></p>
+  <div class="panel-body">
+    <div class="drop">
+      <p>CSV를 여기(또는 지도 아무 곳)로 끌어다 놓기</p>
+      <div class="drop-btns">
+        <label class="btn primary">파일 선택<input type="file" id="file" accept=".csv,.txt,text/csv" multiple hidden></label>
+      </div>
+      <div id="samples" class="samples"></div>
+    </div>
+    <p id="msg" class="msg" role="status"></p>
 
-  <section>
-    <h2>파일</h2>
     <ul id="tracks" class="tracks"></ul>
-  </section>
 
-  <section class="controls">
-    <label>색 기준 <select id="colorBy"></select></label>
-    <label>기준 경로 <select id="ref"></select></label>
+    <div class="btn-row">
+      <button id="fitAll" class="btn">전체 보기</button>
+      <button id="clearAll" class="btn">모두 지우기</button>
+    </div>
+    <div class="btn-row">
+      <button id="baseSat" class="btn active">위성</button>
+      <button id="baseRoad" class="btn">일반</button>
+    </div>
+
+    <div class="fields">
+      <label class="field"><span>색 기준</span><select id="colorBy"></select></label>
+      <label class="field"><span>기준 경로</span><select id="ref"></select></label>
+    </div>
+
+    <div id="chartBox" class="chartbox" hidden>
+      <div class="chart-label">
+        세로축: <select id="chartCol" aria-label="그래프 열"></select>
+        · <select id="chartTrack" aria-label="그래프 파일"></select>
+      </div>
+      <canvas id="chart"></canvas>
+      <div class="chart-axis"><span>0</span><span id="chartEnd"></span></div>
+    </div>
     <div id="legend" class="legend"></div>
-  </section>
 
-  <p class="hint">지도 위 궤적을 클릭하면 그 지점의 값이 나와요. 아래 그래프에 마우스를 올리면 지도에 위치가 표시돼요.</p>
+    <section id="sel" class="sel" hidden>
+      <div class="sel-head"><b>선택 지점</b><button id="selClear" class="btn small">해제</button></div>
+      <dl id="selRows"></dl>
+    </section>
+  </div>
+
+  <div class="panel-foot">
+    <a href="https://github.com/Anjabom/Anjabom.github.io#readme" target="_blank" rel="noopener">사용법</a>
+    <a href="https://github.com/Anjabom/Anjabom.github.io" target="_blank" rel="noopener">소스</a>
+    <span id="mapName"></span>
+  </div>
 </aside>
 
-<main>
-  <div id="map"></div>
-  <div id="chartBox" class="chartbox" hidden>
-    <div class="chart-head">
-      <select id="chartTrack" aria-label="그래프 파일"></select>
-      <select id="chartCol" aria-label="그래프 열"></select>
-      <span id="readout"></span>
-    </div>
-    <canvas id="chart"></canvas>
-  </div>
-</main>
+<div class="drop-overlay">여기에 놓으면 불러와요</div>
 
-<div id="dropOverlay" class="drop-overlay">여기에 놓으면 불러와요</div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
